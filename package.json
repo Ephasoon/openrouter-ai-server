@@ -1,0 +1,21 @@
+{
+  "name": "openrouter-test",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dompurify": "^3.4.13",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "highlight.js": "^11.11.2",
+    "marked": "^18.0.9",
+    "openai": "^7.4.0",
+    "pg": "^8.23.0"
+  }
+}
