@@ -5,282 +5,240 @@ const OpenAI = require("openai");
 const { Pool } = require("pg");
 const crypto = require("crypto");
 
-const app = express();
-const PORT = 3000;
+// Factory function – allows tests to inject mock pool and client dependencies.
+function createApp({ pool, client } = {}) {
+  const app = express();
 
-// ===============================
-// PostgreSQL
-// ===============================
+  app.use(express.json());
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-});
-
-// ===============================
-// OpenRouter
-// ===============================
-
-const client = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-});
-
-// ===============================
-// Middleware
-// ===============================
-
-app.use(express.json());
-app.use(express.static("public"));
-
-// ===============================
-// Database test
-// ===============================
-
-async function testDatabase() {
-  try {
-    const result = await pool.query("SELECT NOW()");
-    console.log("PostgreSQL connected:", result.rows[0].now);
-  } catch (error) {
-    console.error("PostgreSQL connection failed:", error.message);
-  }
-}
-
-// ===============================
-// Create conversation
-// ===============================
-
-async function createConversation() {
-  const id = crypto.randomUUID();
-
-  await pool.query(
-    "INSERT INTO conversations (id) VALUES ($1)",
-    [id]
-  );
-
-  return id;
-}
-
-// ===============================
-// Get messages
-// ===============================
-
-async function getMessages(conversationId) {
-  const result = await pool.query(
-    `SELECT role, content, created_at
-     FROM messages
-     WHERE conversation_id = $1
-     ORDER BY created_at ASC, id ASC`,
-    [conversationId]
-  );
-
-  return result.rows;
-}
-
-// ===============================
-// Save message
-// ===============================
-
-async function saveMessage(conversationId, role, content) {
-  await pool.query(
-    `INSERT INTO messages (conversation_id, role, content)
-     VALUES ($1, $2, $3)`,
-    [conversationId, role, content]
-  );
-}
-
-// ======================================================
-// GET ALL CONVERSATIONS
-// ======================================================
-
-app.get("/api/conversations", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT
-         c.id,
-         c.created_at,
-         (
-           SELECT content
-           FROM messages m
-           WHERE m.conversation_id = c.id
-             AND m.role = 'user'
-           ORDER BY m.created_at ASC, m.id ASC
-           LIMIT 1
-         ) AS title
-       FROM conversations c
-       ORDER BY c.created_at DESC`
-    );
-
-    res.json(result.rows);
-  } catch (error) {
-    console.error("Get conversations error:", error);
-
-    res.status(500).json({
-      error: "Failed to load conversations.",
+  // Use provided pool or create a real one from environment variables.
+  const dbPool =
+    pool ||
+    new Pool({
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT),
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
     });
-  }
-});
 
-// ======================================================
-// GET ONE CONVERSATION
-// ======================================================
-
-app.get("/api/conversations/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const conversation = await pool.query(
-      `SELECT id, created_at
-       FROM conversations
-       WHERE id = $1`,
-      [id]
-    );
-
-    if (conversation.rows.length === 0) {
-      return res.status(404).json({
-        error: "Conversation not found.",
-      });
-    }
-
-    const messages = await getMessages(id);
-
-    res.json({
-      conversation: conversation.rows[0],
-      messages,
+  // Use provided client or create a real OpenAI client configured for OpenRouter.
+  const aiClient =
+    client ||
+    new OpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: process.env.OPENROUTER_API_KEY,
     });
-  } catch (error) {
-    console.error("Get conversation error:", error);
 
-    res.status(500).json({
-      error: "Failed to load conversation.",
-    });
-  }
-});
+  // ======================================================
+  // CREATE CONVERSATION
+  // ======================================================
 
-// ======================================================
-// CREATE NEW CONVERSATION
-// ======================================================
+  app.post("/api/conversations", async (req, res) => {
+    try {
+      const id = crypto.randomUUID();
 
-app.post("/api/conversations", async (req, res) => {
-  try {
-    const id = await createConversation();
-
-    await saveMessage(
-      id,
-      "system",
-      "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful."
-    );
-
-    res.status(201).json({
-      conversationId: id,
-    });
-  } catch (error) {
-    console.error("Create conversation error:", error);
-
-    res.status(500).json({
-      error: "Failed to create conversation.",
-    });
-  }
-});
-
-// ======================================================
-// CHAT
-// ======================================================
-
-app.post("/api/chat", async (req, res) => {
-  try {
-    const { message, conversationId } = req.body;
-
-    if (!message || !message.trim()) {
-      return res.status(400).json({
-        error: "Message is required.",
-      });
-    }
-
-    let id = conversationId;
-
-    // Create conversation automatically if needed
-    if (!id) {
-      id = await createConversation();
-
-      await saveMessage(
-        id,
-        "system",
-        "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful."
+      await dbPool.query(
+        "INSERT INTO conversations (id) VALUES ($1)",
+        [id]
       );
+
+      await dbPool.query(
+        "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+        [id, "system", "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful."]
+      );
+
+      res.status(201).json({ conversationId: id });
+    } catch (error) {
+      console.error("Create conversation error:", error);
+      res.status(500).json({ error: "Failed to create conversation." });
     }
+  });
 
-    // Make sure conversation exists
-    const conversationCheck = await pool.query(
-      "SELECT id FROM conversations WHERE id = $1",
-      [id]
-    );
+  // ======================================================
+  // GET ALL CONVERSATIONS
+  // ======================================================
 
-    if (conversationCheck.rows.length === 0) {
-      return res.status(404).json({
-        error: "Conversation not found.",
+  app.get("/api/conversations", async (req, res) => {
+    try {
+      const result = await dbPool.query(
+        `SELECT
+           c.id,
+           c.created_at,
+           (
+             SELECT content
+             FROM messages m
+             WHERE m.conversation_id = c.id
+               AND m.role = 'user'
+             ORDER BY m.created_at ASC, m.id ASC
+             LIMIT 1
+           ) AS title
+         FROM conversations c
+         ORDER BY c.created_at DESC`
+      );
+
+      res.json(result.rows);
+    } catch (error) {
+      console.error("Get conversations error:", error);
+
+      res.status(500).json({
+        error: "Failed to load conversations.",
       });
     }
+  });
 
-    // Get previous messages
-    const history = await getMessages(id);
+  // ======================================================
+  // GET ONE CONVERSATION
+  // ======================================================
 
-    // Save user message
-    const userMessage = message.trim();
+  app.get("/api/conversations/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    await saveMessage(
-      id,
-      "user",
-      userMessage
-    );
+      const conversation = await dbPool.query(
+        "SELECT id, created_at FROM conversations WHERE id = $1",
+        [id]
+      );
 
-    // Add user message to AI history
-    history.push({
-      role: "user",
-      content: userMessage,
-    });
+      if (conversation.rows.length === 0) {
+        return res.status(404).json({ error: "Conversation not found." });
+      }
 
-    // Ask OpenRouter
-   const response = await client.chat.completions.create({
-  model: "openai/gpt-oss-20b:free",
-  messages: history.map((message) => ({
-    role: message.role,
-    content: message.content,
-  })),
-  timeout: 60000,
-});
-    const answer = response.choices[0].message.content;
+      const messages = await dbPool.query(
+        `SELECT role, content, created_at
+         FROM messages
+         WHERE conversation_id = $1
+         ORDER BY created_at ASC, id ASC`,
+        [id]
+      );
 
-    // Save AI response
-    await saveMessage(
-      id,
-      "assistant",
-      answer
-    );
+      res.json({
+        conversation: conversation.rows[0],
+        messages: messages.rows,
+      });
+    } catch (error) {
+      console.error("Get conversation error:", error);
 
-    res.json({
-      conversationId: id,
-      answer,
-    });
+      res.status(500).json({ error: "Failed to load conversation." });
+    }
+  });
 
-  } catch (error) {
-    console.error("Server error:", error);
+  // ======================================================
+  // CHAT
+  // ======================================================
 
-    res.status(500).json({
-      error: "Something went wrong. Check the server terminal.",
-    });
-  }
-});
+  app.post("/api/chat", async (req, res) => {
+    try {
+      const { message, conversationId } = req.body;
 
-// ======================================================
-// START SERVER
-// ======================================================
+      if (!message || !message.trim()) {
+        return res.status(400).json({ error: "Message is required." });
+      }
 
-app.listen(PORT, async () => {
-  console.log(`AI server running at http://localhost:${PORT}`);
+      let id = conversationId;
 
-  await testDatabase();
-});
+      // Create conversation automatically if needed.
+      if (!id) {
+        const uuid = crypto.randomUUID();
+        const newConversation = await dbPool.query(
+          "INSERT INTO conversations (id) VALUES ($1) RETURNING id",
+          [uuid]
+        );
+        id = newConversation.rows[0]?.id || uuid;
+
+        await dbPool.query(
+          "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+          [id, "system", "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful."]
+        );
+      }
+
+      // Make sure conversation exists.
+      const conversationCheck = await dbPool.query(
+        "SELECT id FROM conversations WHERE id = $1",
+        [id]
+      );
+
+      if (conversationCheck.rows.length === 0) {
+        return res.status(404).json({ error: "Conversation not found." });
+      }
+
+      // Get previous messages.
+      const history = await dbPool.query(
+        `SELECT role, content, created_at
+         FROM messages
+         WHERE conversation_id = $1
+         ORDER BY created_at ASC, id ASC`,
+        [id]
+      );
+
+      // Add user message to AI history.
+      history.rows = [
+        ...history.rows,
+        { role: "user", content: message.trim() },
+      ];
+
+      // Ask OpenRouter.
+      const response = await aiClient.chat.completions.create({
+        model: "openai/gpt-oss-20b:free",
+        messages: history.rows.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        timeout: 60000,
+      });
+      const answer = response.choices[0].message.content;
+
+      // Save AI response.
+      await dbPool.query(
+        "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+        [id, "assistant", answer]
+      );
+
+      res.json({
+        conversationId: id,
+        answer,
+      });
+    } catch (error) {
+      console.error("Server error:", error);
+
+      res.status(500).json({
+        error: "Something went wrong. Check the server terminal.",
+      });
+    }
+  });
+
+  return app;
+}
+
+// ---------------------------------------------------------------------------
+// Production startup – runs when `node server.js` is executed directly.
+// ---------------------------------------------------------------------------
+
+if (require.main === module) {
+  const pool = new Pool({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT),
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+  });
+
+  const client = new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: process.env.OPENROUTER_API_KEY,
+  });
+
+  const app = createApp({ pool, client });
+
+  const PORT = 3000;
+
+  app.listen(PORT, async () => {
+    console.log(`AI server running at http://localhost:${PORT}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Export – tests can inject mock dependencies via `createApp({ pool, client })`.
+// ---------------------------------------------------------------------------
+
+module.exports = { createApp };
