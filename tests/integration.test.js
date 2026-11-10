@@ -63,9 +63,9 @@ test('GET /api/conversations - successful response', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/conversations', 'GET');
-    assert.strict(result.status, 200);
+    assert.strictEqual(result.status, 200);
     assert.ok(Array.isArray(result.body));
-    assert.strict(result.body.length, 2);
+    assert.strictEqual(result.body.length, 2);
   } finally {
     server.close();
   }
@@ -81,8 +81,8 @@ test('GET /api/conversations - database failure', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/conversations', 'GET');
-    assert.strict(result.status, 500);
-    assert.strict(result.body.error, 'Failed to load conversations.');
+    assert.strictEqual(result.status, 500);
+    assert.strictEqual(result.body.error, 'Failed to load conversations.');
   } finally {
     server.close();
   }
@@ -101,11 +101,11 @@ test('GET /api/conversations/:id - successful response', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/conversations/conv-1', 'GET');
-    assert.strict(result.status, 200);
+    assert.strictEqual(result.status, 200);
     assert.ok(result.body.conversation);
     assert.ok(Array.isArray(result.body.messages));
-    assert.strict(result.body.messages.length, 1);
-    assert.strict(result.body.messages[0].role, 'user');
+    assert.strictEqual(result.body.messages.length, 1);
+    assert.strictEqual(result.body.messages[0].role, 'user');
   } finally {
     server.close();
   }
@@ -121,8 +121,8 @@ test('GET /api/conversations/:id - nonexistent conversation', async function () 
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/conversations/nonexistent', 'GET');
-    assert.strict(result.status, 404);
-    assert.strict(result.body.error, 'Conversation not found.');
+    assert.strictEqual(result.status, 404);
+    assert.strictEqual(result.body.error, 'Conversation not found.');
   } finally {
     server.close();
   }
@@ -140,7 +140,7 @@ test('POST /api/conversations - successful creation', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/conversations', 'POST', {});
-    assert.strict(result.status, 201);
+    assert.strictEqual(result.status, 201);
     assert.ok(result.body.conversationId);
   } finally {
     server.close();
@@ -157,8 +157,8 @@ test('POST /api/conversations - database failure', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/conversations', 'POST', {});
-    assert.strict(result.status, 500);
-    assert.strict(result.body.error, 'Failed to create conversation.');
+    assert.strictEqual(result.status, 500);
+    assert.strictEqual(result.body.error, 'Failed to create conversation.');
   } finally {
     server.close();
   }
@@ -176,8 +176,8 @@ test('POST /api/chat - empty message rejection', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: '' });
-    assert.strict(result.status, 400);
-    assert.strict(result.body.error, 'Message is required.');
+    assert.strictEqual(result.status, 400);
+    assert.strictEqual(result.body.error, 'Message is required.');
   } finally {
     server.close();
   }
@@ -193,8 +193,8 @@ test('POST /api/chat - non-string message rejection', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 123 });
-    assert.strict(result.status, 400);
-    assert.strict(result.body.error, 'Message is required.');
+    assert.strictEqual(result.status, 400);
+    assert.strictEqual(result.body.error, 'Message is required.');
   } finally {
     server.close();
   }
@@ -225,7 +225,7 @@ test('POST /api/chat - successful mocked AI response', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
-    assert.strict(result.status, 200);
+    assert.strictEqual(result.status, 200);
     assert.ok(result.body.answer);
     assert.ok(result.body.conversationId);
 
@@ -334,8 +334,8 @@ test('POST /api/chat - database failure', async function () {
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
-    assert.strict(result.status, 500);
-    assert.strict(result.body.error, 'Something went wrong. Check the server terminal.');
+    assert.strictEqual(result.status, 500);
+    assert.strictEqual(result.body.error, 'Something went wrong. Check the server terminal.');
   } finally {
     server.close();
   }

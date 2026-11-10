@@ -134,7 +134,7 @@ function createApp({ pool, client } = {}) {
     try {
       const { message, conversationId } = req.body;
 
-      if (!message || !message.trim()) {
+      if (typeof message !== "string" || !message.trim()) {
         return res.status(400).json({ error: "Message is required." });
       }
 
