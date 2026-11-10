@@ -6,6 +6,16 @@ const { Pool } = require("pg");
 const crypto = require("crypto");
 
 const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const SYSTEM_PROMPT =
+  "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful. You are WithUnion AI, built by WithUnion. Never claim to be built by any other company.";
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_MESSAGE_LENGTH = 4000;
+
+function getDbPort() {
+  const port = Number(process.env.DB_PORT);
+  return Number.isInteger(port) && port > 0 ? port : 5432;
+}
 
 // Factory function – allows tests to inject mock pool and client dependencies.
 function createApp({ pool, client } = {}) {
@@ -19,7 +29,7 @@ function createApp({ pool, client } = {}) {
     pool ||
     new Pool({
       host: process.env.DB_HOST,
-      port: Number(process.env.DB_PORT),
+      port: getDbPort(),
       database: process.env.DB_NAME,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
@@ -48,7 +58,7 @@ function createApp({ pool, client } = {}) {
 
       await dbPool.query(
         "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-        [id, "system", "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful."]
+        [id, "system", SYSTEM_PROMPT]
       );
 
       res.status(201).json({ conversationId: id });
@@ -98,6 +108,10 @@ function createApp({ pool, client } = {}) {
     try {
       const { id } = req.params;
 
+      if (!UUID_REGEX.test(id)) {
+        return res.status(400).json({ error: "Invalid conversation ID." });
+      }
+
       const conversation = await dbPool.query(
         "SELECT id, created_at FROM conversations WHERE id = $1",
         [id]
@@ -138,6 +152,16 @@ function createApp({ pool, client } = {}) {
         return res.status(400).json({ error: "Message is required." });
       }
 
+      if (message.length > MAX_MESSAGE_LENGTH) {
+        return res.status(400).json({
+          error: "Message is too long. Maximum length is 4000 characters.",
+        });
+      }
+
+      if (conversationId && !UUID_REGEX.test(conversationId)) {
+        return res.status(400).json({ error: "Invalid conversation ID." });
+      }
+
       let id = conversationId;
 
       // Create conversation automatically if needed.
@@ -151,7 +175,7 @@ function createApp({ pool, client } = {}) {
 
         await dbPool.query(
           "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-          [id, "system", "You are a helpful AI assistant. Explain things clearly and simply. Use examples when useful."]
+          [id, "system", SYSTEM_PROMPT]
         );
       }
 
@@ -232,26 +256,37 @@ function createApp({ pool, client } = {}) {
 // ---------------------------------------------------------------------------
 
 if (require.main === module) {
-  const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT),
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-  });
+  const requiredEnv = [
+    "OPENROUTER_API_KEY",
+    "DB_HOST",
+    "DB_NAME",
+    "DB_USER",
+    "DB_PASSWORD",
+  ];
+  const missing = requiredEnv.filter((name) => !process.env[name]);
 
-  const client = new OpenAI({
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: process.env.OPENROUTER_API_KEY,
-  });
+  if (missing.length > 0) {
+    console.error(
+      `Missing required environment variables: ${missing.join(", ")}`
+    );
+    process.exit(1);
+  }
 
-  const app = createApp({ pool, client });
+  const app = createApp();
 
   const PORT = 3000;
 
-  app.listen(PORT, async () => {
+  const handleListen = (error) => {
+    if (error) {
+      console.error(`Failed to start server: ${error.message}`);
+      process.exit(1);
+    }
+
     console.log(`AI server running at http://localhost:${PORT}`);
-  });
+  };
+
+  const server = app.listen(PORT, handleListen);
+  server.on("error", handleListen);
 }
 
 // ---------------------------------------------------------------------------

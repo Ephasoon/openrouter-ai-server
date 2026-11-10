@@ -1,7 +1,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { createApp } = require('../server.js');
+
+const VALID_UUID = '11111111-1111-4111-8111-111111111111';
+const MISSING_UUID = '22222222-2222-4222-8222-222222222222';
 
 // Mock client – kept at module level to avoid nested-object syntax issues
 const mockClient = {};
@@ -47,6 +52,30 @@ function makeRequest(server, port, path, method, body) {
     req.end();
   });
 }
+
+// ===== Startup config tests =====
+
+test('startup - missing required environment variables fails fast', function () {
+  const env = { ...process.env };
+  delete env.OPENROUTER_API_KEY;
+  delete env.DB_HOST;
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, '..', 'server.js')],
+    {
+      cwd: __dirname,
+      env,
+      encoding: 'utf8',
+      timeout: 10000,
+    }
+  );
+
+  assert.strictEqual(result.status, 1);
+  assert.match(result.stderr, /Missing required environment variables:/);
+  assert.match(result.stderr, /OPENROUTER_API_KEY/);
+  assert.match(result.stderr, /DB_HOST/);
+});
 
 // ===== GET /api/conversations tests =====
 
@@ -94,13 +123,13 @@ test('GET /api/conversations/:id - successful response', async function () {
       if (sql && sql.includes('conversation_id')) {
         return { rows: [{ role: 'user', content: 'Hello', created_at: new Date() }] };
       }
-      return { rows: [{ id: 'conv-1', created_at: new Date() }] };
+      return { rows: [{ id: VALID_UUID, created_at: new Date() }] };
     },
   };
 
   const { app, server, port } = await startAppForTest(mockPool);
   try {
-    const result = await makeRequest(server, port, '/api/conversations/conv-1', 'GET');
+    const result = await makeRequest(server, port, `/api/conversations/${VALID_UUID}`, 'GET');
     assert.strictEqual(result.status, 200);
     assert.ok(result.body.conversation);
     assert.ok(Array.isArray(result.body.messages));
@@ -120,9 +149,26 @@ test('GET /api/conversations/:id - nonexistent conversation', async function () 
 
   const { app, server, port } = await startAppForTest(mockPool);
   try {
-    const result = await makeRequest(server, port, '/api/conversations/nonexistent', 'GET');
+    const result = await makeRequest(server, port, `/api/conversations/${MISSING_UUID}`, 'GET');
     assert.strictEqual(result.status, 404);
     assert.strictEqual(result.body.error, 'Conversation not found.');
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /api/conversations/:id - invalid id rejection', async function () {
+  const mockPool = {
+    query: async function () {
+      return { rows: [] };
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(mockPool);
+  try {
+    const result = await makeRequest(server, port, '/api/conversations/not-a-uuid', 'GET');
+    assert.strictEqual(result.status, 400);
+    assert.strictEqual(result.body.error, 'Invalid conversation ID.');
   } finally {
     server.close();
   }
@@ -195,6 +241,45 @@ test('POST /api/chat - non-string message rejection', async function () {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 123 });
     assert.strictEqual(result.status, 400);
     assert.strictEqual(result.body.error, 'Message is required.');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/chat - message over 4000 characters rejection', async function () {
+  const mockPool = {
+    query: async function () {
+      return { rows: [] };
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(mockPool);
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', {
+      message: 'a'.repeat(4001),
+    });
+    assert.strictEqual(result.status, 400);
+    assert.strictEqual(result.body.error, 'Message is too long. Maximum length is 4000 characters.');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/chat - invalid conversationId rejection', async function () {
+  const mockPool = {
+    query: async function () {
+      return { rows: [] };
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(mockPool);
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', {
+      message: 'Hello',
+      conversationId: 'conv-1',
+    });
+    assert.strictEqual(result.status, 400);
+    assert.strictEqual(result.body.error, 'Invalid conversation ID.');
   } finally {
     server.close();
   }

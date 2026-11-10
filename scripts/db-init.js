@@ -4,6 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const { Client } = require("pg");
 
+function getDbPort() {
+  const port = Number(process.env.DB_PORT);
+  return Number.isInteger(port) && port > 0 ? port : 5432;
+}
+
 async function main() {
   const schema = fs.readFileSync(
     path.join(__dirname, "..", "db", "schema.sql"),
@@ -12,7 +17,7 @@ async function main() {
 
   const client = new Client({
     host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT),
+    port: getDbPort(),
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
