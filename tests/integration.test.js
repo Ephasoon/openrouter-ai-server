@@ -11,8 +11,8 @@ mockClient.chat.completions.create = async function () {
   return { choices: [{ message: { content: 'AI response' } }] };
 };
 
-function startAppForTest(mockPool) {
-  const app = createApp({ pool: mockPool, client: mockClient });
+function startAppForTest(mockPool, client = mockClient) {
+  const app = createApp({ pool: mockPool, client });
   return new Promise((resolve) => {
     const server = app.listen(0, () => {
       resolve({ app, server, port: server.address().port });
@@ -229,14 +229,17 @@ test('POST /api/chat - successful mocked AI response', async function () {
     assert.ok(result.body.answer);
     assert.ok(result.body.conversationId);
 
-    const inserts = savedMessages.filter(m => m.sql.toLowerCase().includes('insert into messages'));
-    // Server inserts only the assistant message (user message is in-memory only via history.rows)
-    assert.strict(inserts.length, 1, 'Expected exactly 1 message insert: assistant');
-
-    const assistantInsert = inserts.find(m => m.params[1] === 'assistant');
-    assert.ok(assistantInsert, 'Assistant message insert found');
-    assert.strict(assistantInsert.params[2], 'AI response', 'Assistant message should contain mocked response');
-    assert.strict(assistantInsert.params[0], result.body.conversationId, 'Assistant insert should use the same conversation ID');
+    const messageInserts = savedMessages.filter(
+      (m) => m.params && (m.params[1] === 'user' || m.params[1] === 'assistant')
+    );
+    // User message is saved before the AI call; assistant reply is saved after.
+    assert.strictEqual(messageInserts.length, 2, 'Expected two message inserts: user then assistant');
+    assert.strictEqual(messageInserts[0].params[1], 'user');
+    assert.strictEqual(messageInserts[0].params[2], 'Hello');
+    assert.strictEqual(messageInserts[1].params[1], 'assistant');
+    assert.strictEqual(messageInserts[1].params[2], 'AI response');
+    assert.strictEqual(messageInserts[0].params[0], result.body.conversationId);
+    assert.strictEqual(messageInserts[1].params[0], result.body.conversationId);
   } finally {
     server.close();
   }
@@ -245,9 +248,15 @@ test('POST /api/chat - successful mocked AI response', async function () {
 test('POST /api/chat - user and assistant message persistence', async function () {
   const savedMessages = [];
   const mockPool = {
-    query: async function (sql) {
+    query: async function (sql, params) {
+      if (sql && sql.includes('INSERT INTO conversations')) {
+        return { rows: [{ id: 'conv-1' }] };
+      }
+      if (sql && sql.includes('SELECT id FROM conversations WHERE id')) {
+        return { rows: [{ id: params[0] }] };
+      }
       if (sql && sql.toLowerCase().includes('insert into messages')) {
-        savedMessages.push({ role: 'assistant', content: 'AI response' });
+        savedMessages.push({ role: params[1], content: params[2] });
       }
       return { rows: [] };
     },
@@ -256,33 +265,60 @@ test('POST /api/chat - user and assistant message persistence', async function (
   const { app, server, port } = await startAppForTest(mockPool);
   try {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
-    assert.strict(result.status, 200);
-    assert.ok(savedMessages.length >= 1);
-    assert.strict(savedMessages[0].role, 'assistant');
+    assert.strictEqual(result.status, 200);
+
+    const messageSaves = savedMessages.filter(
+      (m) => m.role === 'user' || m.role === 'assistant'
+    );
+    assert.strictEqual(messageSaves.length, 2, 'Expected user and assistant messages to be saved');
+    assert.strictEqual(messageSaves[0].role, 'user');
+    assert.strictEqual(messageSaves[0].content, 'Hello');
+    assert.strictEqual(messageSaves[1].role, 'assistant');
+    assert.strictEqual(messageSaves[1].content, 'AI response');
   } finally {
     server.close();
   }
 });
 
-test('POST /api/chat - OpenRouter failure', async function () {
-  const mockClient = {};
-  mockClient.chat = {};
-  mockClient.chat.completions = {};
-  mockClient.chat.completions.create = async function () {
-    throw new Error('OpenRouter API error');
+test('POST /api/chat - OpenRouter failure keeps user message saved', async function () {
+  const savedMessages = [];
+  const failingClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          throw new Error('OpenRouter API error');
+        },
+      },
+    },
   };
 
   const mockPool = {
-    query: async function () {
+    query: async function (sql, params) {
+      if (sql && sql.includes('INSERT INTO conversations')) {
+        return { rows: [{ id: 'conv-1' }] };
+      }
+      if (sql && sql.includes('SELECT id FROM conversations WHERE id')) {
+        return { rows: [{ id: params[0] }] };
+      }
+      if (sql && sql.toLowerCase().includes('insert into messages')) {
+        savedMessages.push({ role: params[1], content: params[2] });
+      }
       return { rows: [] };
     },
   };
 
-  const { app, server, port } = await startAppForTest(mockPool);
+  const { app, server, port } = await startAppForTest(mockPool, failingClient);
   try {
     const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
-    assert.strict(result.status, 500);
-    assert.strict(result.body.error, 'Something went wrong. Check the server terminal.');
+    assert.strictEqual(result.status, 502);
+    assert.strictEqual(result.body.error, 'Failed to get a response from the AI service.');
+
+    const userSaves = savedMessages.filter((m) => m.role === 'user');
+    assert.strictEqual(userSaves.length, 1, 'User message should remain saved after AI failure');
+    assert.strictEqual(userSaves[0].content, 'Hello');
+
+    const assistantSaves = savedMessages.filter((m) => m.role === 'assistant');
+    assert.strictEqual(assistantSaves.length, 0, 'No assistant message should be saved on failure');
   } finally {
     server.close();
   }

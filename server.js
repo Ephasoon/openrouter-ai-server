@@ -69,7 +69,7 @@ function createApp({ pool, client } = {}) {
            c.id,
            c.created_at,
            (
-             SELECT content
+             SELECT LEFT(content, 60)
              FROM messages m
              WHERE m.conversation_id = c.id
                AND m.role = 'user'
@@ -174,6 +174,12 @@ function createApp({ pool, client } = {}) {
         [id]
       );
 
+      // Save the user message before contacting the AI.
+      await dbPool.query(
+        "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+        [id, "user", message.trim()]
+      );
+
       // Add user message to AI history.
       history.rows = [
         ...history.rows,
@@ -181,15 +187,23 @@ function createApp({ pool, client } = {}) {
       ];
 
       // Ask OpenRouter.
-      const response = await aiClient.chat.completions.create({
-        model: MODEL,
-        messages: history.rows.map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
-        timeout: 60000,
-      });
-      const answer = response.choices[0].message.content;
+      let answer;
+      try {
+        const response = await aiClient.chat.completions.create({
+          model: MODEL,
+          messages: history.rows.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+          timeout: 60000,
+        });
+        answer = response.choices[0].message.content;
+      } catch (error) {
+        console.error("OpenRouter error:", error);
+        return res.status(502).json({
+          error: "Failed to get a response from the AI service.",
+        });
+      }
 
       // Save AI response.
       await dbPool.query(
