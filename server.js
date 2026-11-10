@@ -5,11 +5,14 @@ const OpenAI = require("openai");
 const { Pool } = require("pg");
 const crypto = require("crypto");
 
+const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+
 // Factory function – allows tests to inject mock pool and client dependencies.
 function createApp({ pool, client } = {}) {
   const app = express();
 
   app.use(express.json());
+  app.use(express.static("public"));
 
   // Use provided pool or create a real one from environment variables.
   const dbPool =
@@ -179,7 +182,7 @@ function createApp({ pool, client } = {}) {
 
       // Ask OpenRouter.
       const response = await aiClient.chat.completions.create({
-        model: "openai/gpt-oss-20b:free",
+        model: MODEL,
         messages: history.rows.map((message) => ({
           role: message.role,
           content: message.content,
