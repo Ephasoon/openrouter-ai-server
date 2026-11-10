@@ -13,14 +13,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "body-parser": "^2.4.0",
-    "dompurify": "^3.4.17",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "highlight.js": "^11.11.2",
-    "marked": "^18.0.9",
     "openai": "^7.4.0",
-    "pg": "^8.23.0",
-    "proxy-addr": "^2.0.8"
+    "pg": "^8.23.0"
   }
 }
