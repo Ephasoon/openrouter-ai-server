@@ -4,6 +4,7 @@ const express = require("express");
 const OpenAI = require("openai");
 const { Pool } = require("pg");
 const crypto = require("crypto");
+const path = require("path");
 
 const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const SYSTEM_PROMPT =
@@ -22,7 +23,7 @@ function createApp({ pool, client } = {}) {
   const app = express();
 
   app.use(express.json());
-  app.use(express.static("public"));
+  app.use(express.static(path.join(__dirname, "public")));
 
   // Use provided pool or create a real one from environment variables.
   const dbPool =
@@ -35,6 +36,12 @@ function createApp({ pool, client } = {}) {
       password: process.env.DB_PASSWORD,
     });
 
+  if (typeof dbPool.on === "function") {
+    dbPool.on("error", (error) => {
+      console.error("Unexpected PostgreSQL pool error:", error);
+    });
+  }
+
   // Use provided client or create a real OpenAI client configured for OpenRouter.
   const aiClient =
     client ||
@@ -42,6 +49,16 @@ function createApp({ pool, client } = {}) {
       baseURL: "https://openrouter.ai/api/v1",
       apiKey: process.env.OPENROUTER_API_KEY,
     });
+
+  app.get("/health", async (req, res) => {
+    try {
+      await dbPool.query("SELECT 1");
+      res.status(200).json({ status: "ok" });
+    } catch (error) {
+      console.error("Health check failed:", error);
+      res.status(503).json({ status: "error" });
+    }
+  });
 
   // ======================================================
   // CREATE CONVERSATION
@@ -221,9 +238,32 @@ function createApp({ pool, client } = {}) {
           })),
           timeout: 60000,
         });
-        answer = response.choices[0].message.content;
+        answer = response?.choices?.[0]?.message?.content;
+
+        if (typeof answer !== "string" || !answer.trim()) {
+          console.error(
+            "OpenRouter returned no message content:",
+            JSON.stringify(response)
+          );
+          return res.status(502).json({
+            error: "Failed to get a response from the AI service.",
+          });
+        }
       } catch (error) {
         console.error("OpenRouter error:", error);
+
+        if (error && error.status === 429) {
+          return res.status(429).json({
+            error: "Rate limit reached. Please wait a moment and try again.",
+          });
+        }
+
+        if (error && (error.status === 401 || error.status === 402)) {
+          console.error(
+            `OpenRouter rejected the request (status ${error.status}). Check OPENROUTER_API_KEY and account credit.`
+          );
+        }
+
         return res.status(502).json({
           error: "Failed to get a response from the AI service.",
         });
@@ -247,6 +287,8 @@ function createApp({ pool, client } = {}) {
       });
     }
   });
+
+  app.set("dbPool", dbPool);
 
   return app;
 }
@@ -274,7 +316,7 @@ if (require.main === module) {
 
   const app = createApp();
 
-  const PORT = 3000;
+  const PORT = Number.parseInt(process.env.PORT, 10) || 3000;
 
   const handleListen = (error) => {
     if (error) {
@@ -287,6 +329,35 @@ if (require.main === module) {
 
   const server = app.listen(PORT, handleListen);
   server.on("error", handleListen);
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    console.log(`\n${signal} received. Shutting down gracefully...`);
+
+    const forceExit = setTimeout(() => {
+      console.error("Graceful shutdown timed out. Forcing exit.");
+      process.exit(1);
+    }, 10000);
+    forceExit.unref();
+
+    server.close(async () => {
+      try {
+        await app.get("dbPool").end();
+      } catch (error) {
+        console.error("Error closing database pool:", error.message);
+      }
+      console.log("Shutdown complete.");
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 // ---------------------------------------------------------------------------

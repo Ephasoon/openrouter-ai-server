@@ -425,3 +425,218 @@ test('POST /api/chat - database failure', async function () {
     server.close();
   }
 });
+
+// ===== GET /health tests =====
+
+test('GET /health - database reachable', async function () {
+  const mockPool = {
+    query: async function (sql) {
+      if (sql === 'SELECT 1') {
+        return { rows: [{ '?column?': 1 }] };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(mockPool);
+  try {
+    const result = await makeRequest(server, port, '/health', 'GET');
+    assert.strictEqual(result.status, 200);
+    assert.strictEqual(result.body.status, 'ok');
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /health - database failure', async function () {
+  const mockPool = {
+    query: async function () {
+      throw new Error('DB connection failed');
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(mockPool);
+  try {
+    const result = await makeRequest(server, port, '/health', 'GET');
+    assert.strictEqual(result.status, 503);
+    assert.strictEqual(result.body.status, 'error');
+  } finally {
+    server.close();
+  }
+});
+
+// ===== POST /api/chat - empty AI answer guard =====
+
+function makeChatMockPool(savedMessages) {
+  return {
+    query: async function (sql, params) {
+      if (sql && sql.includes('INSERT INTO conversations')) {
+        return { rows: [{ id: 'conv-1' }] };
+      }
+      if (sql && sql.includes('SELECT id FROM conversations WHERE id')) {
+        return { rows: [{ id: params[0] }] };
+      }
+      if (sql && sql.toLowerCase().includes('insert into messages')) {
+        savedMessages.push({ role: params[1], content: params[2] });
+      }
+      return { rows: [] };
+    },
+  };
+}
+
+test('POST /api/chat - null AI answer returns 502 and no assistant insert', async function () {
+  const savedMessages = [];
+  const nullAnswerClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          return { choices: [{ message: { content: null } }] };
+        },
+      },
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(
+    makeChatMockPool(savedMessages),
+    nullAnswerClient
+  );
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
+    assert.strictEqual(result.status, 502);
+    assert.strictEqual(result.body.error, 'Failed to get a response from the AI service.');
+
+    const userSaves = savedMessages.filter((m) => m.role === 'user');
+    assert.strictEqual(userSaves.length, 1, 'User message should remain saved');
+    assert.strictEqual(userSaves[0].content, 'Hello');
+
+    const assistantSaves = savedMessages.filter((m) => m.role === 'assistant');
+    assert.strictEqual(
+      assistantSaves.length,
+      0,
+      'No assistant row should be inserted for a null answer'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/chat - blank AI answer returns 502 and no assistant insert', async function () {
+  const savedMessages = [];
+  const blankAnswerClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          return { choices: [{ message: { content: '   ' } }] };
+        },
+      },
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(
+    makeChatMockPool(savedMessages),
+    blankAnswerClient
+  );
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
+    assert.strictEqual(result.status, 502);
+    assert.strictEqual(result.body.error, 'Failed to get a response from the AI service.');
+
+    const assistantSaves = savedMessages.filter((m) => m.role === 'assistant');
+    assert.strictEqual(
+      assistantSaves.length,
+      0,
+      'No assistant row should be inserted for a blank answer'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/chat - missing choices returns 502 and no assistant insert', async function () {
+  const savedMessages = [];
+  const emptyResponseClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          return {};
+        },
+      },
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(
+    makeChatMockPool(savedMessages),
+    emptyResponseClient
+  );
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
+    assert.strictEqual(result.status, 502);
+    assert.strictEqual(result.body.error, 'Failed to get a response from the AI service.');
+
+    const assistantSaves = savedMessages.filter((m) => m.role === 'assistant');
+    assert.strictEqual(
+      assistantSaves.length,
+      0,
+      'No assistant row should be inserted when choices are missing'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+// ===== POST /api/chat - OpenRouter error mapping =====
+
+test('POST /api/chat - 429 from OpenRouter returns 429 with retry message', async function () {
+  const rateLimitedClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          const error = new Error('Rate limit exceeded');
+          error.status = 429;
+          throw error;
+        },
+      },
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(
+    makeChatMockPool([]),
+    rateLimitedClient
+  );
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
+    assert.strictEqual(result.status, 429);
+    assert.strictEqual(
+      result.body.error,
+      'Rate limit reached. Please wait a moment and try again.'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/chat - 401 from OpenRouter returns generic 502', async function () {
+  const unauthorizedClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          const error = new Error('Invalid API key');
+          error.status = 401;
+          throw error;
+        },
+      },
+    },
+  };
+
+  const { app, server, port } = await startAppForTest(
+    makeChatMockPool([]),
+    unauthorizedClient
+  );
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' });
+    assert.strictEqual(result.status, 502);
+    assert.strictEqual(result.body.error, 'Failed to get a response from the AI service.');
+  } finally {
+    server.close();
+  }
+});
