@@ -5,6 +5,9 @@ const OpenAI = require("openai");
 const { Pool } = require("pg");
 const crypto = require("crypto");
 const path = require("path");
+const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
+const rateLimit = require("express-rate-limit");
 
 const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const SYSTEM_PROMPT =
@@ -12,17 +15,88 @@ const SYSTEM_PROMPT =
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_MESSAGE_LENGTH = 4000;
+const SESSION_COOKIE_NAME = "session";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CONTEXT_MESSAGE_LIMIT = 20;
 
 function getDbPort() {
   const port = Number(process.env.DB_PORT);
   return Number.isInteger(port) && port > 0 ? port : 5432;
 }
 
+function safeEqualStrings(a, b) {
+  const hashA = crypto.createHash("sha256").update(String(a)).digest();
+  const hashB = crypto.createHash("sha256").update(String(b)).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+function createSessionToken(secret, expiresAtMs) {
+  const payload = Buffer.from(String(expiresAtMs), "utf8").toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifySessionToken(secret, token) {
+  if (typeof secret !== "string" || !secret) {
+    return false;
+  }
+  if (typeof token !== "string" || !token) {
+    return false;
+  }
+  const parts = token.split(".");
+  if (parts.length !== 2) {
+    return false;
+  }
+  const [payload, signature] = parts;
+  const expectedSignature = crypto
+    .createHmac("sha256", secret)
+    .update(payload)
+    .digest("base64url");
+  const signatureBuffer = Buffer.from(signature, "utf8");
+  const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+  if (
+    signatureBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
+  ) {
+    return false;
+  }
+  const expiresAtMs = Number.parseInt(
+    Buffer.from(payload, "base64url").toString("utf8"),
+    10
+  );
+  return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+}
+
 // Factory function – allows tests to inject mock pool and client dependencies.
 function createApp({ pool, client } = {}) {
   const app = express();
 
+  if (process.env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "script-src": [
+            "'self'",
+            "https://cdn.jsdelivr.net",
+            "https://cdnjs.cloudflare.com",
+          ],
+          "style-src": ["'self'"],
+          "font-src": ["'self'"],
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+    })
+  );
   app.use(express.json());
+  app.use(cookieParser());
   app.use(express.static(path.join(__dirname, "public")));
 
   // Use provided pool or create a real one from environment variables.
@@ -34,6 +108,9 @@ function createApp({ pool, client } = {}) {
       database: process.env.DB_NAME,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
+      ...(process.env.DB_SSL === "true"
+        ? { ssl: { rejectUnauthorized: false } }
+        : {}),
     });
 
   if (typeof dbPool.on === "function") {
@@ -49,6 +126,89 @@ function createApp({ pool, client } = {}) {
       baseURL: "https://openrouter.ai/api/v1",
       apiKey: process.env.OPENROUTER_API_KEY,
     });
+
+  const accessPassword = process.env.ACCESS_PASSWORD || "";
+  const sessionSecret = process.env.SESSION_SECRET || "";
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many login attempts. Please try again later." },
+  });
+
+  const chatLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many messages. Please wait a moment and try again." },
+  });
+
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please try again later." },
+  });
+
+  app.use("/api", apiLimiter);
+
+  app.use("/api", (req, res, next) => {
+    if (req.path === "/login" || req.path === "/logout") {
+      return next();
+    }
+
+    if (!accessPassword || !sessionSecret) {
+      return next();
+    }
+
+    if (!verifySessionToken(sessionSecret, req.cookies[SESSION_COOKIE_NAME])) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+
+    next();
+  });
+
+  app.post("/api/login", loginLimiter, (req, res) => {
+    const { password } = req.body || {};
+
+    if (
+      !accessPassword ||
+      typeof password !== "string" ||
+      !safeEqualStrings(password, accessPassword)
+    ) {
+      return res.status(401).json({ error: "Invalid password." });
+    }
+
+    const token = createSessionToken(
+      sessionSecret,
+      Date.now() + SESSION_TTL_MS
+    );
+
+    res.cookie(SESSION_COOKIE_NAME, token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: SESSION_TTL_MS,
+      path: "/",
+    });
+
+    res.json({ ok: true });
+  });
+
+  app.post("/api/logout", (req, res) => {
+    res.clearCookie(SESSION_COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+    });
+
+    res.json({ ok: true });
+  });
 
   app.get("/health", async (req, res) => {
     try {
@@ -161,7 +321,7 @@ function createApp({ pool, client } = {}) {
   // CHAT
   // ======================================================
 
-  app.post("/api/chat", async (req, res) => {
+  app.post("/api/chat", chatLimiter, async (req, res) => {
     try {
       const { message, conversationId } = req.body;
 
@@ -221,18 +381,17 @@ function createApp({ pool, client } = {}) {
         [id, "user", message.trim()]
       );
 
-      // Add user message to AI history.
-      history.rows = [
+      const contextMessages = [
         ...history.rows,
         { role: "user", content: message.trim() },
-      ];
+      ].slice(-CONTEXT_MESSAGE_LIMIT);
 
       // Ask OpenRouter.
       let answer;
       try {
         const response = await aiClient.chat.completions.create({
           model: MODEL,
-          messages: history.rows.map((message) => ({
+          messages: contextMessages.map((message) => ({
             role: message.role,
             content: message.content,
           })),
@@ -304,6 +463,8 @@ if (require.main === module) {
     "DB_NAME",
     "DB_USER",
     "DB_PASSWORD",
+    "ACCESS_PASSWORD",
+    "SESSION_SECRET",
   ];
   const missing = requiredEnv.filter((name) => !process.env[name]);
 

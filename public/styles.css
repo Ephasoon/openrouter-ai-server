@@ -1,0 +1,671 @@
+* {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --sidebar: #f7f7f8;
+      --border: #e5e5e5;
+      --text: #1f1f1f;
+      --muted: #6b6b6b;
+      --hover: #ececec;
+      --user: #f4f4f4;
+      --accent: #111111;
+      --white: #ffffff;
+    }
+
+    body {
+      font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+      color: var(--text);
+      background: var(--white);
+
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* =========================
+       APP
+    ========================= */
+
+    .app {
+      display: flex;
+      height: 100vh;
+      width: 100%;
+    }
+
+    /* =========================
+       SIDEBAR
+    ========================= */
+
+    .sidebar {
+      width: 280px;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+
+      display: flex;
+      flex-direction: column;
+
+      transition: transform 0.25s ease;
+    }
+
+    .sidebar-header {
+      padding: 14px;
+    }
+
+    .new-chat {
+      width: 100%;
+
+      border: 1px solid var(--border);
+      background: var(--white);
+
+      border-radius: 8px;
+
+      padding: 11px 14px;
+
+      font-size: 14px;
+      font-weight: 600;
+
+      cursor: pointer;
+
+      display: flex;
+      align-items: center;
+      gap: 9px;
+
+      transition: background 0.15s;
+    }
+
+    .new-chat:hover {
+      background: var(--hover);
+    }
+
+    .history-title {
+      padding: 8px 16px;
+
+      font-size: 12px;
+      font-weight: 600;
+
+      color: var(--muted);
+
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .conversations {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 8px;
+    }
+
+    .conversation {
+      padding: 10px 12px;
+
+      border-radius: 8px;
+
+      cursor: pointer;
+
+      margin-bottom: 2px;
+
+      font-size: 14px;
+
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+
+      transition: background 0.15s;
+    }
+
+    .conversation:hover {
+      background: var(--hover);
+    }
+
+    .conversation.active {
+      background: #e5e5e5;
+      font-weight: 500;
+    }
+
+    .empty-history {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 12px;
+    }
+
+    /* =========================
+       MAIN
+    ========================= */
+
+    .main {
+      flex: 1;
+
+      display: flex;
+      flex-direction: column;
+
+      min-width: 0;
+    }
+
+    /* =========================
+       HEADER
+    ========================= */
+
+    .header {
+      height: 60px;
+
+      border-bottom: 1px solid var(--border);
+
+      display: flex;
+      align-items: center;
+
+      padding: 0 20px;
+
+      gap: 12px;
+    }
+
+    .menu-button {
+      display: none;
+
+      border: none;
+      background: transparent;
+
+      font-size: 22px;
+
+      cursor: pointer;
+    }
+
+    .brand {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #16a34a;
+      margin-left: auto;
+    }
+
+    /* =========================
+       CHAT
+    ========================= */
+
+    .chat {
+      flex: 1;
+
+      overflow-y: auto;
+
+      padding: 30px 20px 120px;
+    }
+
+    .messages {
+      max-width: 850px;
+      margin: 0 auto;
+    }
+
+    /* =========================
+       WELCOME
+    ========================= */
+
+    .welcome {
+      min-height: 60vh;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      text-align: center;
+    }
+
+    .welcome-content {
+      max-width: 600px;
+    }
+
+    .welcome-icon {
+      font-size: 42px;
+      margin-bottom: 16px;
+    }
+
+    .welcome h1 {
+      font-size: 32px;
+      margin-bottom: 10px;
+    }
+
+    .welcome p {
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    /* =========================
+       MESSAGE
+    ========================= */
+
+    .message {
+      display: flex;
+
+      gap: 14px;
+
+      margin-bottom: 28px;
+
+      line-height: 1.6;
+
+      font-size: 15px;
+    }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+
+      border-radius: 50%;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      flex-shrink: 0;
+
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .message.user .avatar {
+      background: #111;
+      color: white;
+    }
+
+    .message.assistant .avatar {
+      background: #e8e8e8;
+      color: #222;
+    }
+
+    .message-content {
+      flex: 1;
+
+      min-width: 0;
+
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+.message-text h1,
+.message-text h2,
+.message-text h3 {
+  margin: 18px 0 10px;
+  line-height: 1.3;
+}
+
+.message-text p {
+  margin: 8px 0;
+}
+
+.message-text ul,
+.message-text ol {
+  margin: 10px 0;
+  padding-left: 24px;
+}
+
+.message-text li {
+  margin: 4px 0;
+}
+
+.message-text strong {
+  font-weight: 700;
+}
+
+.message-text code {
+  background: #f1f1f1;
+  padding: 2px 5px;
+  border-radius: 5px;
+  font-family: Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.message-text pre {
+  background: #1e1e1e;
+  color: #f5f5f5;
+  padding: 16px;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 14px 0;
+}
+.code-wrapper {
+  position: relative;
+  margin: 14px 0;
+}
+.code-wrapper pre {
+  margin: 0;
+  padding-top: 42px;
+}
+.copy-code-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #fff;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.copy-code-button:hover {
+  background: #3a3a3a;
+}
+
+.message-text pre code {
+  background: transparent;
+  padding: 0;
+
+  color: inherit;
+
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.message-text blockquote {
+  border-left: 3px solid #aaa;
+
+  padding-left: 14px;
+
+  margin: 12px 0;
+
+  color: #666;
+}
+
+    .message-role {
+      font-weight: 600;
+      margin-bottom: 3px;
+    }
+
+    /* =========================
+       TYPING
+    ========================= */
+
+    .typing {
+      display: flex;
+      gap: 5px;
+      padding-top: 8px;
+    }
+
+    .typing span {
+      width: 7px;
+      height: 7px;
+
+      background: #888;
+
+      border-radius: 50%;
+
+      animation: typing 1.2s infinite;
+    }
+
+    .typing span:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+
+    .typing span:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    @keyframes typing {
+      0%, 60%, 100% {
+        transform: translateY(0);
+        opacity: 0.4;
+      }
+
+      30% {
+        transform: translateY(-5px);
+        opacity: 1;
+      }
+    }
+
+    /* =========================
+       INPUT
+    ========================= */
+
+    .input-area {
+      position: fixed;
+
+      bottom: 0;
+      right: 0;
+
+      left: 280px;
+
+      padding: 18px 20px 24px;
+
+      background: linear-gradient(
+        transparent,
+        white 35%
+      );
+    }
+
+    .input-wrapper {
+      max-width: 850px;
+
+      margin: 0 auto;
+
+      border: 1px solid #d9d9d9;
+
+      border-radius: 14px;
+
+      background: white;
+
+      display: flex;
+
+      align-items: flex-end;
+
+      padding: 10px;
+
+      box-shadow:
+        0 2px 8px rgba(0,0,0,0.05);
+    }
+
+    textarea {
+      flex: 1;
+
+      border: none;
+      outline: none;
+
+      resize: none;
+
+      max-height: 180px;
+
+      padding: 8px;
+
+      font-family: inherit;
+
+      font-size: 15px;
+
+      line-height: 1.5;
+
+      background: transparent;
+    }
+
+    .send-button {
+      width: 38px;
+      height: 38px;
+
+      border: none;
+
+      border-radius: 9px;
+
+      background: #111;
+
+      color: white;
+
+      cursor: pointer;
+
+      font-size: 18px;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .send-button:hover {
+      background: #333;
+    }
+
+    .send-button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .input-hint {
+      max-width: 850px;
+
+      margin: 7px auto 0;
+
+      text-align: center;
+
+      font-size: 11px;
+
+      color: #888;
+    }
+
+    /* =========================
+       MOBILE
+    ========================= */
+
+    @media (max-width: 700px) {
+
+      .sidebar {
+        position: fixed;
+
+        z-index: 100;
+
+        left: 0;
+        top: 0;
+        bottom: 0;
+
+        transform: translateX(-100%);
+
+        box-shadow: 4px 0 15px rgba(0,0,0,0.1);
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      .menu-button {
+        display: block;
+      }
+
+      .input-area {
+        left: 0;
+      }
+
+      .header {
+        padding: 0 14px;
+      }
+
+      .chat {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .welcome h1 {
+        font-size: 26px;
+      }
+    }
+
+  /* =========================
+     LOGIN
+  ========================= */
+
+  .login-screen {
+    display: none;
+
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+
+    background: rgba(255, 255, 255, 0.96);
+
+    align-items: center;
+    justify-content: center;
+  }
+
+  .login-screen.open {
+    display: flex;
+  }
+
+  .login-box {
+    width: 100%;
+    max-width: 340px;
+
+    padding: 28px;
+
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--white);
+
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
+
+    text-align: center;
+  }
+
+  .login-icon {
+    font-size: 34px;
+    margin-bottom: 10px;
+  }
+
+  .login-box h1 {
+    font-size: 22px;
+    margin-bottom: 6px;
+  }
+
+  .login-box p {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+
+  .login-box input {
+    width: 100%;
+
+    border: 1px solid var(--border);
+    border-radius: 8px;
+
+    padding: 11px 12px;
+
+    font-size: 14px;
+
+    outline: none;
+
+    margin-bottom: 10px;
+  }
+
+  .login-box input:focus {
+    border-color: var(--accent);
+  }
+
+  .login-box button {
+    width: 100%;
+
+    border: none;
+    border-radius: 8px;
+
+    padding: 11px 14px;
+
+    font-size: 14px;
+    font-weight: 600;
+
+    background: var(--accent);
+    color: white;
+
+    cursor: pointer;
+  }
+
+  .login-box button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .login-error {
+    color: #dc2626;
+    font-size: 13px;
+
+    min-height: 18px;
+    margin-top: 8px;
+  }

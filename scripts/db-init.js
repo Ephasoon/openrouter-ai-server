@@ -15,13 +15,19 @@ async function main() {
     "utf8"
   );
 
-  const client = new Client({
+  const clientConfig = {
     host: process.env.DB_HOST,
     port: getDbPort(),
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-  });
+  };
+
+  if (process.env.DB_SSL === "true") {
+    clientConfig.ssl = { rejectUnauthorized: false };
+  }
+
+  const client = new Client(clientConfig);
 
   await client.connect();
   try {
