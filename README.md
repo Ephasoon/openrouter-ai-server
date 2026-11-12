@@ -36,6 +36,8 @@ Optional:
 - `DB_PORT` – PostgreSQL port (default 5432)
 - `DB_SSL` – set to `true` for managed PostgreSQL with TLS
 - `PORT` – HTTP port (default 3000)
+- `DAILY_MESSAGE_LIMIT` – per-user daily message quota (default 50)
+- `MAX_OUTPUT_TOKENS` – maximum tokens per AI reply sent to OpenRouter (default 1000)
 
 ## Auth
 
@@ -43,7 +45,7 @@ Each user has an account identified by email with a bcrypt-hashed password (cost
 
 Sessions are HMAC-signed httpOnly cookies carrying `{ userId, exp }`, valid for 7 days. All `/api/*` routes require a valid session except `/api/signup` and `/api/login`; `/health` stays public. Conversations belong to the user who created them: every conversation and message query filters by the signed-in user id, and other users' conversations return 404.
 
-Rate limits (per IP): login 10 per 15 minutes, chat 20 per minute, other `/api/*` 100 per 15 minutes.
+Rate limits: signup 5 per hour per IP, login 10 per 15 minutes per IP, chat 20 per minute per user, other `/api/*` 100 per 15 minutes per IP. On top of that, each user can send up to `DAILY_MESSAGE_LIMIT` messages per rolling 24 hours; over the quota returns 429 with "Daily message limit reached. Try again tomorrow." AI replies are capped at `MAX_OUTPUT_TOKENS` tokens. When `NODE_ENV=production`, the app trusts one proxy hop so rate limits see real client IPs.
 
 ## Run
 

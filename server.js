@@ -31,6 +31,16 @@ function getDbPort() {
   return Number.isInteger(port) && port > 0 ? port : 5432;
 }
 
+function getDailyMessageLimit() {
+  const limit = Number.parseInt(process.env.DAILY_MESSAGE_LIMIT, 10);
+  return Number.isInteger(limit) && limit > 0 ? limit : 50;
+}
+
+function getMaxOutputTokens() {
+  const tokens = Number.parseInt(process.env.MAX_OUTPUT_TOKENS, 10);
+  return Number.isInteger(tokens) && tokens > 0 ? tokens : 1000;
+}
+
 function createSessionToken(secret, userId, expiresAtMs) {
   const payload = Buffer.from(
     JSON.stringify({ userId, exp: expiresAtMs }),
@@ -146,6 +156,14 @@ function createApp({ pool, client } = {}) {
   const sessionSecret = process.env.SESSION_SECRET || "";
   let timingEqualizerHash = null;
 
+  const signupLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many signup attempts. Please try again later." },
+  });
+
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 10,
@@ -159,6 +177,7 @@ function createApp({ pool, client } = {}) {
     limit: 20,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => req.user.id,
     message: { error: "Too many messages. Please wait a moment and try again." },
   });
 
@@ -207,7 +226,7 @@ function createApp({ pool, client } = {}) {
     });
   };
 
-  app.post("/api/signup", async (req, res) => {
+  app.post("/api/signup", signupLimiter, async (req, res) => {
     try {
       const { email, password } = req.body || {};
 
@@ -487,6 +506,24 @@ function createApp({ pool, client } = {}) {
         return res.status(404).json({ error: "Conversation not found." });
       }
 
+      const quotaResult = await dbPool.query(
+        `SELECT COUNT(*) AS count
+         FROM messages m
+         JOIN conversations c ON m.conversation_id = c.id
+         WHERE c.user_id = $1
+           AND m.role = 'user'
+           AND m.created_at > now() - interval '24 hours'`,
+        [req.user.id]
+      );
+
+      const usedToday = Number(quotaResult.rows[0]?.count ?? 0);
+
+      if (usedToday >= getDailyMessageLimit()) {
+        return res
+          .status(429)
+          .json({ error: "Daily message limit reached. Try again tomorrow." });
+      }
+
       // Get previous messages.
       const history = await dbPool.query(
         `SELECT m.role, m.content, m.created_at
@@ -517,6 +554,7 @@ function createApp({ pool, client } = {}) {
             role: message.role,
             content: message.content,
           })),
+          max_tokens: getMaxOutputTokens(),
           timeout: 60000,
         });
         answer = response?.choices?.[0]?.message?.content;

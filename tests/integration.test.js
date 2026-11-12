@@ -203,6 +203,15 @@ function makeStatefulPool() {
         return { rows };
       }
 
+      if (q.includes('count(*)')) {
+        const count = messages.filter((message) => {
+          if (message.role !== 'user') return false;
+          const conversation = conversations.get(message.conversation_id);
+          return conversation && conversation.user_id === params[0];
+        }).length;
+        return { rows: [{ count: String(count) }] };
+      }
+
       if (q.includes('from messages m join conversations c')) {
         const conversation = conversations.get(params[0]);
         const rows =
@@ -223,10 +232,13 @@ function makeStatefulPool() {
   };
 }
 
-function makeChatMockPool(savedMessages) {
+function makeChatMockPool(savedMessages, quotaCount = null) {
   return {
     query: async function (sql, params) {
       const q = norm(sql);
+      if (quotaCount !== null && q.includes('count(*)')) {
+        return { rows: [{ count: String(quotaCount) }] };
+      }
       if (q.includes('insert into conversations') && q.includes('returning id')) {
         return { rows: [{ id: CONV_A_UUID }] };
       }
@@ -1487,5 +1499,163 @@ test('context cap sends only the last 20 messages to the model', async function 
     assert.strictEqual(sent[19].content, 'Hello');
   } finally {
     server.close();
+  }
+});
+
+// ===== Abuse protection =====
+
+test('POST /api/signup rate limit returns 429 on the 6th attempt within an hour', async function () {
+  const mockPool = makeUserStorePool();
+
+  const { app, server, port } = await startAppForTest(mockPool);
+  try {
+    const statuses = [];
+    for (let i = 0; i < 6; i++) {
+      const result = await makeRequest(server, port, '/api/signup', 'POST', {
+        email: `user${i}@example.com`,
+        password: 'password123',
+      });
+      statuses.push(result.status);
+    }
+
+    assert.deepStrictEqual(statuses.slice(0, 5), new Array(5).fill(201));
+    assert.strictEqual(statuses[5], 429);
+    assert.strictEqual(mockPool.users.length, 5);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/chat - 51st message in 24 hours returns 429 and is not sent to the AI client', async function () {
+  const savedMessages = [];
+  let aiCalls = 0;
+  const countingClient = {
+    chat: {
+      completions: {
+        create: async function () {
+          aiCalls += 1;
+          return { choices: [{ message: { content: 'AI response' } }] };
+        },
+      },
+    },
+  };
+
+  const mockPool = makeChatMockPool(savedMessages, 50);
+
+  const { app, server, port } = await startAppForTest(mockPool, countingClient);
+  try {
+    const result = await makeRequest(server, port, '/api/chat', 'POST', { message: 'Hello' }, {
+      Cookie: sessionCookieFor(USER_A_ID),
+    });
+
+    assert.strictEqual(result.status, 429);
+    assert.strictEqual(
+      result.body.error,
+      'Daily message limit reached. Try again tomorrow.'
+    );
+    assert.strictEqual(aiCalls, 0, 'AI client must not be called once the daily quota is exhausted');
+    const userSaves = savedMessages.filter((m) => m.role === 'user');
+    assert.strictEqual(
+      userSaves.length,
+      0,
+      'No user message should be saved once the daily quota is exhausted'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('daily quota is per user - user B is unaffected by user A hitting the limit', async function () {
+  const previousLimit = process.env.DAILY_MESSAGE_LIMIT;
+  process.env.DAILY_MESSAGE_LIMIT = '2';
+
+  const pool = makeStatefulPool();
+
+  const { app, server, port } = await startAppForTest(pool);
+  try {
+    const a = await signupAndGetCookie(server, port, 'a@example.com', 'password123');
+    const b = await signupAndGetCookie(server, port, 'b@example.com', 'password123');
+    assert.strictEqual(a.result.status, 201);
+    assert.strictEqual(b.result.status, 201);
+
+    const aFirst = await makeRequest(server, port, '/api/chat', 'POST', { message: 'one' }, {
+      Cookie: a.cookie,
+    });
+    const aSecond = await makeRequest(server, port, '/api/chat', 'POST', { message: 'two' }, {
+      Cookie: a.cookie,
+    });
+    assert.strictEqual(aFirst.status, 200);
+    assert.strictEqual(aSecond.status, 200);
+
+    const aThird = await makeRequest(server, port, '/api/chat', 'POST', { message: 'three' }, {
+      Cookie: a.cookie,
+    });
+    assert.strictEqual(aThird.status, 429);
+    assert.strictEqual(
+      aThird.body.error,
+      'Daily message limit reached. Try again tomorrow.'
+    );
+
+    const bFirst = await makeRequest(server, port, '/api/chat', 'POST', { message: 'hello from B' }, {
+      Cookie: b.cookie,
+    });
+    assert.strictEqual(bFirst.status, 200);
+    assert.strictEqual(bFirst.body.answer, 'AI response');
+  } finally {
+    if (previousLimit === undefined) {
+      delete process.env.DAILY_MESSAGE_LIMIT;
+    } else {
+      process.env.DAILY_MESSAGE_LIMIT = previousLimit;
+    }
+    server.close();
+  }
+});
+
+test('POST /api/chat - max_tokens is passed to the AI client', async function () {
+  const capturedParams = [];
+  const captureClient = {
+    chat: {
+      completions: {
+        create: async function (params) {
+          capturedParams.push(params);
+          return { choices: [{ message: { content: 'AI response' } }] };
+        },
+      },
+    },
+  };
+
+  const previous = process.env.MAX_OUTPUT_TOKENS;
+
+  try {
+    process.env.MAX_OUTPUT_TOKENS = '777';
+    const custom = await startAppForTest(makeChatMockPool([]), captureClient);
+    try {
+      const result = await makeRequest(custom.server, custom.port, '/api/chat', 'POST', { message: 'Hello' }, {
+        Cookie: sessionCookieFor(USER_A_ID),
+      });
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(capturedParams[0].max_tokens, 777);
+    } finally {
+      custom.server.close();
+    }
+
+    delete process.env.MAX_OUTPUT_TOKENS;
+    capturedParams.length = 0;
+    const defaults = await startAppForTest(makeChatMockPool([]), captureClient);
+    try {
+      const result = await makeRequest(defaults.server, defaults.port, '/api/chat', 'POST', { message: 'Hello' }, {
+        Cookie: sessionCookieFor(USER_A_ID),
+      });
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(capturedParams[0].max_tokens, 1000);
+    } finally {
+      defaults.server.close();
+    }
+  } finally {
+    if (previous === undefined) {
+      delete process.env.MAX_OUTPUT_TOKENS;
+    } else {
+      process.env.MAX_OUTPUT_TOKENS = previous;
+    }
   }
 });
