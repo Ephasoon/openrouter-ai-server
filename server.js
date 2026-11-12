@@ -8,6 +8,7 @@ const path = require("path");
 const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
 const rateLimit = require("express-rate-limit");
+const bcrypt = require("bcryptjs");
 
 const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const SYSTEM_PROMPT =
@@ -18,20 +19,23 @@ const MAX_MESSAGE_LENGTH = 4000;
 const SESSION_COOKIE_NAME = "session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CONTEXT_MESSAGE_LIMIT = 20;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 72;
+const BCRYPT_COST = 12;
+const GENERIC_LOGIN_ERROR = "Invalid email or password.";
+const TIMING_HASH_PLAINTEXT = "timing-equalizer-placeholder";
 
 function getDbPort() {
   const port = Number(process.env.DB_PORT);
   return Number.isInteger(port) && port > 0 ? port : 5432;
 }
 
-function safeEqualStrings(a, b) {
-  const hashA = crypto.createHash("sha256").update(String(a)).digest();
-  const hashB = crypto.createHash("sha256").update(String(b)).digest();
-  return crypto.timingSafeEqual(hashA, hashB);
-}
-
-function createSessionToken(secret, expiresAtMs) {
-  const payload = Buffer.from(String(expiresAtMs), "utf8").toString("base64url");
+function createSessionToken(secret, userId, expiresAtMs) {
+  const payload = Buffer.from(
+    JSON.stringify({ userId, exp: expiresAtMs }),
+    "utf8"
+  ).toString("base64url");
   const signature = crypto
     .createHmac("sha256", secret)
     .update(payload)
@@ -41,14 +45,14 @@ function createSessionToken(secret, expiresAtMs) {
 
 function verifySessionToken(secret, token) {
   if (typeof secret !== "string" || !secret) {
-    return false;
+    return null;
   }
   if (typeof token !== "string" || !token) {
-    return false;
+    return null;
   }
   const parts = token.split(".");
   if (parts.length !== 2) {
-    return false;
+    return null;
   }
   const [payload, signature] = parts;
   const expectedSignature = crypto
@@ -61,13 +65,25 @@ function verifySessionToken(secret, token) {
     signatureBuffer.length !== expectedBuffer.length ||
     !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
   ) {
-    return false;
+    return null;
   }
-  const expiresAtMs = Number.parseInt(
-    Buffer.from(payload, "base64url").toString("utf8"),
-    10
-  );
-  return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+  let session;
+  try {
+    session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch (error) {
+    return null;
+  }
+  if (
+    !session ||
+    typeof session.userId !== "string" ||
+    !UUID_REGEX.test(session.userId)
+  ) {
+    return null;
+  }
+  if (!Number.isFinite(session.exp) || session.exp <= Date.now()) {
+    return null;
+  }
+  return { userId: session.userId, exp: session.exp };
 }
 
 // Factory function – allows tests to inject mock pool and client dependencies.
@@ -127,8 +143,8 @@ function createApp({ pool, client } = {}) {
       apiKey: process.env.OPENROUTER_API_KEY,
     });
 
-  const accessPassword = process.env.ACCESS_PASSWORD || "";
   const sessionSecret = process.env.SESSION_SECRET || "";
+  let timingEqualizerHash = null;
 
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -157,34 +173,28 @@ function createApp({ pool, client } = {}) {
   app.use("/api", apiLimiter);
 
   app.use("/api", (req, res, next) => {
-    if (req.path === "/login" || req.path === "/logout") {
+    if (req.path === "/signup" || req.path === "/login") {
       return next();
     }
 
-    if (!accessPassword || !sessionSecret) {
-      return next();
-    }
+    const session = verifySessionToken(
+      sessionSecret,
+      req.cookies[SESSION_COOKIE_NAME]
+    );
 
-    if (!verifySessionToken(sessionSecret, req.cookies[SESSION_COOKIE_NAME])) {
+    if (!session) {
       return res.status(401).json({ error: "Authentication required." });
     }
+
+    req.user = { id: session.userId };
 
     next();
   });
 
-  app.post("/api/login", loginLimiter, (req, res) => {
-    const { password } = req.body || {};
-
-    if (
-      !accessPassword ||
-      typeof password !== "string" ||
-      !safeEqualStrings(password, accessPassword)
-    ) {
-      return res.status(401).json({ error: "Invalid password." });
-    }
-
+  const startSession = (res, userId) => {
     const token = createSessionToken(
       sessionSecret,
+      userId,
       Date.now() + SESSION_TTL_MS
     );
 
@@ -195,8 +205,96 @@ function createApp({ pool, client } = {}) {
       maxAge: SESSION_TTL_MS,
       path: "/",
     });
+  };
 
-    res.json({ ok: true });
+  app.post("/api/signup", async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+
+      const normalizedEmail =
+        typeof email === "string" ? email.trim().toLowerCase() : "";
+
+      if (!EMAIL_REGEX.test(normalizedEmail)) {
+        return res.status(400).json({ error: "Enter a valid email address." });
+      }
+
+      if (
+        typeof password !== "string" ||
+        password.length < MIN_PASSWORD_LENGTH ||
+        password.length > MAX_PASSWORD_LENGTH
+      ) {
+        return res.status(400).json({
+          error: "Password must be between 8 and 72 characters.",
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+
+      const result = await dbPool.query(
+        "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email",
+        [normalizedEmail, passwordHash]
+      );
+
+      const user = result.rows[0];
+
+      startSession(res, user.id);
+
+      res.status(201).json({ user: { id: user.id, email: user.email } });
+    } catch (error) {
+      if (error && error.code === "23505") {
+        return res
+          .status(409)
+          .json({ error: "An account with this email already exists." });
+      }
+
+      console.error("Signup error:", error);
+      res.status(500).json({ error: "Failed to create account." });
+    }
+  });
+
+  app.post("/api/login", loginLimiter, async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+
+      const normalizedEmail =
+        typeof email === "string" ? email.trim().toLowerCase() : "";
+
+      const result =
+        normalizedEmail && typeof password === "string" && password
+          ? await dbPool.query(
+              "SELECT id, password_hash FROM users WHERE email = $1",
+              [normalizedEmail]
+            )
+          : { rows: [] };
+
+      const user = result.rows[0];
+
+      if (!user) {
+        if (!timingEqualizerHash) {
+          timingEqualizerHash = await bcrypt.hash(
+            TIMING_HASH_PLAINTEXT,
+            BCRYPT_COST
+          );
+        }
+        await bcrypt.compare(String(password || ""), timingEqualizerHash);
+        return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
+      }
+
+      const passwordMatches =
+        typeof user.password_hash === "string" &&
+        (await bcrypt.compare(password, user.password_hash));
+
+      if (!passwordMatches) {
+        return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
+      }
+
+      startSession(res, user.id);
+
+      res.json({ user: { id: user.id, email: normalizedEmail } });
+    } catch (error) {
+      console.error("Login error:", error);
+      res.status(500).json({ error: "Failed to log in." });
+    }
   });
 
   app.post("/api/logout", (req, res) => {
@@ -208,6 +306,26 @@ function createApp({ pool, client } = {}) {
     });
 
     res.json({ ok: true });
+  });
+
+  app.get("/api/me", async (req, res) => {
+    try {
+      const result = await dbPool.query(
+        "SELECT id, email FROM users WHERE id = $1",
+        [req.user.id]
+      );
+
+      const user = result.rows[0];
+
+      if (!user) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+
+      res.json({ user: { id: user.id, email: user.email } });
+    } catch (error) {
+      console.error("Get current user error:", error);
+      res.status(500).json({ error: "Failed to load account." });
+    }
   });
 
   app.get("/health", async (req, res) => {
@@ -229,8 +347,8 @@ function createApp({ pool, client } = {}) {
       const id = crypto.randomUUID();
 
       await dbPool.query(
-        "INSERT INTO conversations (id) VALUES ($1)",
-        [id]
+        "INSERT INTO conversations (id, user_id) VALUES ($1, $2)",
+        [id, req.user.id]
       );
 
       await dbPool.query(
@@ -264,7 +382,9 @@ function createApp({ pool, client } = {}) {
              LIMIT 1
            ) AS title
          FROM conversations c
-         ORDER BY c.created_at DESC`
+         WHERE c.user_id = $1
+         ORDER BY c.created_at DESC`,
+        [req.user.id]
       );
 
       res.json(result.rows);
@@ -290,8 +410,8 @@ function createApp({ pool, client } = {}) {
       }
 
       const conversation = await dbPool.query(
-        "SELECT id, created_at FROM conversations WHERE id = $1",
-        [id]
+        "SELECT id, created_at FROM conversations WHERE id = $1 AND user_id = $2",
+        [id, req.user.id]
       );
 
       if (conversation.rows.length === 0) {
@@ -299,11 +419,12 @@ function createApp({ pool, client } = {}) {
       }
 
       const messages = await dbPool.query(
-        `SELECT role, content, created_at
-         FROM messages
-         WHERE conversation_id = $1
-         ORDER BY created_at ASC, id ASC`,
-        [id]
+        `SELECT m.role, m.content, m.created_at
+         FROM messages m
+         JOIN conversations c ON m.conversation_id = c.id
+         WHERE m.conversation_id = $1 AND c.user_id = $2
+         ORDER BY m.created_at ASC, m.id ASC`,
+        [id, req.user.id]
       );
 
       res.json({
@@ -345,8 +466,8 @@ function createApp({ pool, client } = {}) {
       if (!id) {
         const uuid = crypto.randomUUID();
         const newConversation = await dbPool.query(
-          "INSERT INTO conversations (id) VALUES ($1) RETURNING id",
-          [uuid]
+          "INSERT INTO conversations (id, user_id) VALUES ($1, $2) RETURNING id",
+          [uuid, req.user.id]
         );
         id = newConversation.rows[0]?.id || uuid;
 
@@ -356,10 +477,10 @@ function createApp({ pool, client } = {}) {
         );
       }
 
-      // Make sure conversation exists.
+      // Make sure the conversation exists and belongs to this user.
       const conversationCheck = await dbPool.query(
-        "SELECT id FROM conversations WHERE id = $1",
-        [id]
+        "SELECT id FROM conversations WHERE id = $1 AND user_id = $2",
+        [id, req.user.id]
       );
 
       if (conversationCheck.rows.length === 0) {
@@ -368,11 +489,12 @@ function createApp({ pool, client } = {}) {
 
       // Get previous messages.
       const history = await dbPool.query(
-        `SELECT role, content, created_at
-         FROM messages
-         WHERE conversation_id = $1
-         ORDER BY created_at ASC, id ASC`,
-        [id]
+        `SELECT m.role, m.content, m.created_at
+         FROM messages m
+         JOIN conversations c ON m.conversation_id = c.id
+         WHERE m.conversation_id = $1 AND c.user_id = $2
+         ORDER BY m.created_at ASC, m.id ASC`,
+        [id, req.user.id]
       );
 
       // Save the user message before contacting the AI.
@@ -463,7 +585,6 @@ if (require.main === module) {
     "DB_NAME",
     "DB_USER",
     "DB_PASSWORD",
-    "ACCESS_PASSWORD",
     "SESSION_SECRET",
   ];
   const missing = requiredEnv.filter((name) => !process.env[name]);
@@ -522,7 +643,8 @@ if (require.main === module) {
 }
 
 // ---------------------------------------------------------------------------
-// Export – tests can inject mock dependencies via `createApp({ pool, client })`.
+// Export – tests can inject mock dependencies via `createApp({ pool, client })`
+// and reuse the signed session token helpers.
 // ---------------------------------------------------------------------------
 
-module.exports = { createApp };
+module.exports = { createApp, createSessionToken, verifySessionToken };

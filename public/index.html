@@ -70,6 +70,14 @@
         ● Online
       </div>
 
+      <button
+        class="logout-button"
+        id="logoutButton"
+        title="Sign out"
+      >
+        Sign out
+      </button>
+
     </header>
 
 
@@ -137,9 +145,9 @@
 </div>
 
 
-<!-- LOGIN -->
+<!-- AUTH -->
 
-<div class="login-screen" id="loginScreen">
+<div class="login-screen" id="authScreen">
 
   <div class="login-box">
 
@@ -147,26 +155,38 @@
       🔒
     </div>
 
-    <h1>
+    <h1 id="authTitle">
       Sign in
     </h1>
 
-    <p>
-      Enter the access password to continue.
+    <p id="authSubtitle">
+      Sign in to continue to your conversations.
     </p>
 
     <input
+      type="email"
+      id="authEmail"
+      placeholder="Email"
+      autocomplete="email"
+    >
+
+    <input
       type="password"
-      id="loginPassword"
-      placeholder="Access password"
+      id="authPassword"
+      placeholder="Password"
       autocomplete="current-password"
     >
 
-    <button id="loginButton">
+    <button id="authSubmit">
       Sign in
     </button>
 
-    <div class="login-error" id="loginError"></div>
+    <div class="auth-toggle">
+      <span id="authToggleText">Don't have an account?</span>
+      <a href="#" id="authToggleLink">Sign up</a>
+    </div>
+
+    <div class="login-error" id="authError"></div>
 
   </div>
 

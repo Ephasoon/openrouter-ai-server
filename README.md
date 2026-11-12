@@ -1,6 +1,6 @@
 # OpenRouter Test
 
-A local, single-user AI chat app. It uses Express and PostgreSQL to store conversations and messages, and calls OpenRouter for model responses. A browser UI lives in `public/`, and `index.js` provides a separate terminal chat loop.
+A local, multi-user AI chat app. It uses Express and PostgreSQL to store users, conversations and messages, and calls OpenRouter for model responses. A browser UI lives in `public/`, and `index.js` provides a separate terminal chat loop.
 
 ## Setup
 
@@ -28,7 +28,6 @@ Required environment variables (see `.env.example`); the server refuses to start
 
 - `OPENROUTER_API_KEY` – OpenRouter API key
 - `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` – PostgreSQL connection
-- `ACCESS_PASSWORD` – password for the browser login screen
 - `SESSION_SECRET` – secret used to sign session cookies
 
 Optional:
@@ -40,7 +39,9 @@ Optional:
 
 ## Auth
 
-The browser UI shows a login screen when the API returns 401. `POST /api/login` checks the access password and sets an HMAC-signed, httpOnly session cookie valid for 7 days; `POST /api/logout` clears it. All `/api/*` routes require a valid session except `/api/login`; `/health` stays public.
+Each user has an account identified by email with a bcrypt-hashed password (cost 12). The browser UI shows a sign in / sign up screen when the API returns 401. `POST /api/signup` validates the email, requires a password of 8–72 characters and starts a session; `POST /api/login` signs in an existing account and returns the same generic error for unknown emails and wrong passwords; `GET /api/me` returns the signed-in user; `POST /api/logout` clears the session.
+
+Sessions are HMAC-signed httpOnly cookies carrying `{ userId, exp }`, valid for 7 days. All `/api/*` routes require a valid session except `/api/signup` and `/api/login`; `/health` stays public. Conversations belong to the user who created them: every conversation and message query filters by the signed-in user id, and other users' conversations return 404.
 
 Rate limits (per IP): login 10 per 15 minutes, chat 20 per minute, other `/api/*` 100 per 15 minutes.
 

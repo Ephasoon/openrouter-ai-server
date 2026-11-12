@@ -35,16 +35,36 @@
     document.getElementById("menuButton");
 
   const loginScreen =
-    document.getElementById("loginScreen");
+    document.getElementById("authScreen");
 
-  const loginPassword =
-    document.getElementById("loginPassword");
+  const authEmail =
+    document.getElementById("authEmail");
 
-  const loginButton =
-    document.getElementById("loginButton");
+  const authPassword =
+    document.getElementById("authPassword");
 
-  const loginError =
-    document.getElementById("loginError");
+  const authSubmit =
+    document.getElementById("authSubmit");
+
+  const authError =
+    document.getElementById("authError");
+
+  const authTitle =
+    document.getElementById("authTitle");
+
+  const authSubtitle =
+    document.getElementById("authSubtitle");
+
+  const authToggleText =
+    document.getElementById("authToggleText");
+
+  const authToggleLink =
+    document.getElementById("authToggleLink");
+
+  const logoutButton =
+    document.getElementById("logoutButton");
+
+  let authMode = "login";
 
 
   // ==========================================
@@ -59,7 +79,7 @@
         await fetch("/api/conversations");
 
       if (response.status === 401) {
-        showLoginScreen();
+        showAuthScreen();
         return;
       }
 
@@ -151,7 +171,7 @@
         await fetch(`/api/conversations/${id}`);
 
       if (response.status === 401) {
-        showLoginScreen();
+        showAuthScreen();
         return;
       }
 
@@ -336,7 +356,7 @@ function addMessageToUI(role, content) {
         );
 
       if (response.status === 401) {
-        showLoginScreen();
+        showAuthScreen();
         return;
       }
 
@@ -474,7 +494,7 @@ function addMessageToUI(role, content) {
           .getElementById("typingIndicator")
           ?.remove();
 
-        showLoginScreen();
+        showAuthScreen();
 
         return;
 
@@ -621,43 +641,95 @@ function addMessageToUI(role, content) {
 
 
   // ==========================================
-  // LOGIN
+  // AUTH
   // ==========================================
 
-  function showLoginScreen() {
+  function showAuthScreen() {
 
     loginScreen.classList.add("open");
 
-    loginPassword.value = "";
+    setAuthMode("login");
 
-    loginError.textContent = "";
+    authPassword.value = "";
 
-    setTimeout(() => loginPassword.focus(), 50);
+    authError.textContent = "";
+
+    setTimeout(() => authEmail.focus(), 50);
 
   }
 
-  function hideLoginScreen() {
+  function hideAuthScreen() {
 
     loginScreen.classList.remove("open");
 
   }
 
-  async function login() {
+  function setAuthMode(mode) {
 
-    const password = loginPassword.value;
+    authMode = mode;
 
-    if (!password) {
+    if (mode === "signup") {
+
+      authTitle.textContent = "Create account";
+
+      authSubtitle.textContent =
+        "Choose an email and a password (8-72 characters).";
+
+      authSubmit.textContent = "Sign up";
+
+      authToggleText.textContent =
+        "Already have an account?";
+
+      authToggleLink.textContent = "Sign in";
+
+      authPassword.setAttribute(
+        "autocomplete",
+        "new-password"
+      );
+
+    } else {
+
+      authTitle.textContent = "Sign in";
+
+      authSubtitle.textContent =
+        "Sign in to continue to your conversations.";
+
+      authSubmit.textContent = "Sign in";
+
+      authToggleText.textContent =
+        "Don't have an account?";
+
+      authToggleLink.textContent = "Sign up";
+
+      authPassword.setAttribute(
+        "autocomplete",
+        "current-password"
+      );
+
+    }
+
+    authError.textContent = "";
+
+  }
+
+  async function submitAuth() {
+
+    const email = authEmail.value.trim();
+
+    const password = authPassword.value;
+
+    if (!email || !password) {
       return;
     }
 
-    loginButton.disabled = true;
+    authSubmit.disabled = true;
 
-    loginError.textContent = "";
+    authError.textContent = "";
 
     try {
 
       const response = await fetch(
-        "/api/login",
+        authMode === "signup" ? "/api/signup" : "/api/login",
         {
           method: "POST",
 
@@ -665,7 +737,7 @@ function addMessageToUI(role, content) {
             "Content-Type": "application/json"
           },
 
-          body: JSON.stringify({ password })
+          body: JSON.stringify({ email, password })
         }
       );
 
@@ -673,14 +745,17 @@ function addMessageToUI(role, content) {
 
       if (!response.ok) {
 
-        loginError.textContent =
-          data.error || "Login failed.";
+        authError.textContent =
+          data.error ||
+          (authMode === "signup"
+            ? "Sign up failed."
+            : "Login failed.");
 
         return;
 
       }
 
-      hideLoginScreen();
+      hideAuthScreen();
 
       await loadConversations();
 
@@ -688,34 +763,116 @@ function addMessageToUI(role, content) {
 
     } catch (error) {
 
-      loginError.textContent =
+      authError.textContent =
         "Could not connect to the server.";
 
     } finally {
 
-      loginButton.disabled = false;
+      authSubmit.disabled = false;
 
     }
 
   }
 
-  loginButton.addEventListener("click", login);
+  async function logout() {
 
-  loginPassword.addEventListener(
+    try {
+
+      await fetch("/api/logout", {
+        method: "POST"
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+    }
+
+    currentConversationId = null;
+
+    messages.innerHTML = "";
+
+    messages.appendChild(
+      createWelcome()
+    );
+
+    showAuthScreen();
+
+  }
+
+  async function checkAuth() {
+
+    try {
+
+      const response = await fetch("/api/me");
+
+      if (response.status === 401) {
+        showAuthScreen();
+        return;
+      }
+
+      await loadConversations();
+
+    } catch (error) {
+
+      console.error(error);
+
+      showAuthScreen();
+
+    }
+
+  }
+
+  authSubmit.addEventListener("click", submitAuth);
+
+  authPassword.addEventListener(
     "keydown",
     event => {
 
       if (event.key === "Enter") {
-        login();
+        submitAuth();
       }
 
     }
+  );
+
+  authEmail.addEventListener(
+    "keydown",
+    event => {
+
+      if (event.key === "Enter") {
+        submitAuth();
+      }
+
+    }
+  );
+
+  authToggleLink.addEventListener(
+    "click",
+    event => {
+
+      event.preventDefault();
+
+      setAuthMode(
+        authMode === "signup" ? "login" : "signup"
+      );
+
+      authPassword.value = "";
+
+      setTimeout(() => authEmail.focus(), 50);
+
+    }
+  );
+
+  logoutButton.addEventListener(
+    "click",
+    logout
   );
 
   // ==========================================
   // INITIALIZE
   // ==========================================
 
-  loadConversations();
+  checkAuth();
 
   messageInput.focus();
